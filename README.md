@@ -1,12 +1,12 @@
-# Topps Release Sync
+# T Release Sync
 
-This repo scrapes the Topps release calendar with Playwright and sends normalized rows to a webhook that updates the Chasing Majors release schedule sheet.
+This repo scrapes the T release calendar with Playwright and sends normalized rows to a webhook that updates the  release schedule sheet.
 
 ## Files
 
 - `TRCS.py`
 - `requirements.txt`
-- `.github/workflows/topps-release-sync.yml`
+- `.github/workflows/TRS.yml`
 
 ## Required GitHub Secrets
 
