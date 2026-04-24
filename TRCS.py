@@ -8,7 +8,7 @@ import requests
 from playwright.sync_api import sync_playwright
 
 
-TOPPS_RELEASE_CALENDAR_URL = "https://www.topps.com/release-calendar"
+RELEASE_CALENDAR_URL = "https://www.topps.com/release-calendar"
 DEFAULT_TIMEOUT_MS = 45000
 
 
@@ -87,7 +87,7 @@ def build_iso_date(month_abbr: str, day: str, year_value: str) -> str:
     return f"{year}-{month}-{int(day):02d}"
 
 
-def parse_topps_calendar_line(line: str, section: str) -> dict | None:
+def parse_calendar_line(line: str, section: str) -> dict | None:
     if not re.match(r"^(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday),", line, re.I):
         return None
 
@@ -106,14 +106,14 @@ def parse_topps_calendar_line(line: str, section: str) -> dict | None:
     day = match.group(3)
     remainder = normalize_space(match.group(4))
     if not remainder:
-      return None
+        return None
 
     year, title = split_year_and_title(remainder)
     if not title:
         return None
 
     release_date = build_iso_date(month_abbr, day, year) if year else ""
-    status = "Upcoming" if section == "dropping_soon" else "Spotlight"
+    status = "Spotlight" if section == "release_spotlight" else "Upcoming"
 
     return {
         "releaseDate": release_date,
@@ -127,7 +127,7 @@ def parse_topps_calendar_line(line: str, section: str) -> dict | None:
         "vaultUrl": f"/vault/?q={requests.utils.quote(title)}",
         "source": "topps_calendar",
         "sourceKey": normalize_source_key(title),
-        "sourceUrl": TOPPS_RELEASE_CALENDAR_URL,
+        "sourceUrl": RELEASE_CALENDAR_URL,
         "sourceSection": section,
         "lastSyncedAt": datetime.utcnow().isoformat(timespec="seconds") + "Z",
     }
@@ -149,10 +149,12 @@ def dedupe_rows(rows: list[dict]) -> list[dict]:
     return out
 
 
-def parse_calendar_text(text: str) -> list[dict]:
-    lines = [normalize_space(line) for line in text.splitlines()]
-    lines = [line for line in lines if line]
+def lines_from_text(text: str) -> list[str]:
+    return [line for line in (normalize_space(part) for part in text.splitlines()) if line]
 
+
+def parse_calendar_text(text: str) -> list[dict]:
+    lines = lines_from_text(text)
     rows = []
     section = ""
 
@@ -161,34 +163,64 @@ def parse_calendar_text(text: str) -> list[dict]:
         if "dropping soon" in lower:
             section = "dropping_soon"
             continue
-        if lower == "release spotlight":
+        if "release spotlight" in lower:
             section = "release_spotlight"
             continue
         if lower in ("products", "customer service", "corporate"):
             section = ""
             continue
-        if not section:
-            continue
 
-        parsed = parse_topps_calendar_line(line, section)
+        parsed = parse_calendar_line(line, section or "calendar")
         if parsed:
             rows.append(parsed)
 
     return dedupe_rows(rows)
 
 
+def extract_rows_from_html(html: str) -> list[dict]:
+    text = re.sub(r"<script[\s\S]*?</script>", "\n", html, flags=re.I)
+    text = re.sub(r"<style[\s\S]*?</style>", "\n", text, flags=re.I)
+    text = re.sub(r"</?(?:br|p|div|section|article|li|h1|h2|h3|h4|h5|h6|span|a)[^>]*>", "\n", text, flags=re.I)
+    text = re.sub(r"<[^>]+>", " ", text)
+    return parse_calendar_text(text)
+
+
 def scrape_release_calendar() -> list[dict]:
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
-        page = browser.new_page()
-        page.goto(TOPPS_RELEASE_CALENDAR_URL, wait_until="networkidle", timeout=DEFAULT_TIMEOUT_MS)
-        page_text = page.locator("body").inner_text(timeout=DEFAULT_TIMEOUT_MS)
+        browser = p.chromium.launch(
+            headless=True,
+            args=[
+                "--disable-blink-features=AutomationControlled",
+                "--no-sandbox",
+            ],
+        )
+        page = browser.new_page(
+            user_agent=(
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/135.0.0.0 Safari/537.36"
+            )
+        )
+        page.goto(RELEASE_CALENDAR_URL, wait_until="domcontentloaded", timeout=DEFAULT_TIMEOUT_MS)
+        page.wait_for_timeout(5000)
+
+        body_text = page.locator("body").inner_text(timeout=DEFAULT_TIMEOUT_MS)
+        html = page.content()
         browser.close()
 
-    rows = parse_calendar_text(page_text)
-    if not rows:
-        raise RuntimeError("No Topps release rows were parsed from the page.")
-    return rows
+    rows = parse_calendar_text(body_text)
+    if rows:
+        return rows
+
+    rows = extract_rows_from_html(html)
+    if rows:
+        return rows
+
+    debug_payload = {
+        "body_preview": body_text[:4000],
+        "html_preview": html[:4000],
+    }
+    raise RuntimeError("No release rows were parsed from the page. Debug: " + json.dumps(debug_payload))
 
 
 def post_rows_to_webhook(rows: list[dict]) -> dict:
@@ -227,10 +259,9 @@ def main() -> int:
         print(json.dumps(result, indent=2))
         return 0
     except Exception as exc:
-        print(f"Topps sync failed: {exc}", file=sys.stderr)
+        print(f"TRCS failed: {exc}", file=sys.stderr)
         return 1
 
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
