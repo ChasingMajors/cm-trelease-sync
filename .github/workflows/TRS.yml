@@ -1,1 +1,32 @@
+name: Topps Release Sync
 
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 */6 * * *"
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          python -m playwright install chromium
+
+      - name: Run Topps sync
+        env:
+          TOPPS_SYNC_WEBHOOK_URL: ${{ secrets.TOPPS_SYNC_WEBHOOK_URL }}
+          TOPPS_SYNC_WEBHOOK_TOKEN: ${{ secrets.TOPPS_SYNC_WEBHOOK_TOKEN }}
+        run: |
+          python TRCS.py
